@@ -1,0 +1,4 @@
+# Output of the scripts when run from this folder
+*.json
+*.txt
+_merged_repos/
