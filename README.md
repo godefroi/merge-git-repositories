@@ -143,3 +143,36 @@ For a ref name that exists in several clones (a clone's `heads/x` and its `origi
 - UNC paths work (`safe.directory` is set per call). Keep target paths short: Windows' 260 character limit applies to the objects inside a target too.
 - The JSON files are snapshots. If you change a clone after running step 1, rerun from there, or at least rerun `Capture-GitWip.ps1` and the verifier, which look at the working trees live.
 - Run `-WhatIf` before `Build-GitMerge.ps1`, `Capture-GitWip.ps1` and `Finalize-GitMerge.ps1`.
+
+## Checking a pile of code against your remotes
+
+`coverage/codecover.py` answers a different question: given a folder of old code (git clones, svn working copies, plain folders), what's in it that isn't already in some repo on your Forgejo or GitHub? It reads nothing but the pile and the servers, and writes only a report and its own index.
+
+Python 3.12+, git, and `gh` (logged in) for GitHub. Run it with `python -I` since the pile is untrusted input.
+
+**1. Build or refresh the index.** Each repo is cloned blobless into a temp folder, its history read with `git log --raw`, and the clone deleted. The index keeps blob ids, paths, commit ids and `git-svn-id` trailers, nothing else. A repo is only re-read when its `ls-remote` tips change, so a refresh is quick.
+
+```powershell
+$env:FORGEJO_TOKEN = '...'   # admin token to see every org
+python -I coverage\codecover.py index forgejo --url http://forgejo.local
+python -I coverage\codecover.py index github --owner godefroi
+```
+
+The index lives at `%LOCALAPPDATA%\codecover\index.db` (`--db` to change it). For about 170 repos it's around 230 MB.
+
+**2. Scan.**
+
+```powershell
+python -I coverage\codecover.py scan <pile> --out coverage.json
+```
+
+The pile is split into units: each git clone, each topmost svn working copy, and otherwise each folder `--depth` levels down (default 2). For each unit:
+
+- the share of files whose content exists anywhere in any indexed repo's history. A file matches as-is, with or without a BOM, with LF or CRLF, with svn `$Keyword$` expansions collapsed, or as UTF-16. Build output and IDE state (`bin`, `obj`, `.vs`, `*.pdb`, `*.suo` and so on) are skipped and counted separately; source files under `packages`, `debug` or `release` are still counted.
+- git clones: commits on any ref that no indexed repo has (annotated tags compared by the commit they point at).
+- svn working copies (wc.db or the older `entries` formats): the newest revision of the checkout's svn path, and of each `svn:externals` path, that made it into a git-svn conversion. Matched on the path suffix, since the repository root URL changed over the years.
+- uncovered text files are compared with indexed files of the same name, fetched one at a time through the Forgejo or GitHub API, and classed `near` (95% or more of lines the same), `modified` (50% or more), `new` or `binary`. Scores are cached. `--no-similar` skips this step.
+
+It prints a table and writes the full detail to the JSON file. Nothing in the pile is changed and nothing is pushed.
+
+`python -I coverage\codecover.py selftest` checks the hashing variants and unit/skip rules.
